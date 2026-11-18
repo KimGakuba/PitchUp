@@ -1,0 +1,185 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ----- helpers -------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isActive() {
+      return isSignedIn()
+        && request.auth.token.get('suspended', false) != true;
+    }
+
+    // Roles come ONLY from the Firebase Auth custom claim, which is written
+    // solely by the setUserRole / onUserProfileCreated Cloud Functions.
+    function role() {
+      return request.auth != null
+        ? request.auth.token.get('role', 'player')
+        : null;
+    }
+
+    function isAdmin() {
+      return isActive() && role() == 'admin';
+    }
+
+    function isOwnerRole() {
+      return isActive() && (role() == 'owner' || role() == 'admin');
+    }
+
+    function isVenueOwner(venueId) {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/venues/$(venueId)).data.ownerId
+           == request.auth.uid;
+    }
+
+    // ----- users ---------------------------------------------------------
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create: if isActive()
+        && uid == request.auth.uid
+        && request.resource.data.role == 'player'
+        && request.resource.data.status == 'active'
+        && request.resource.data.reliabilityScore == 100
+        && request.resource.data.gamesPlayed == 0
+        && request.resource.data.noShows == 0
+        && request.resource.data.name is string
+        && request.resource.data.phone is string;
+
+      // Players edit only presentation fields. Server-managed fields (role,
+      // reliability, counters, status, moderation, fcmTokens) are immutable
+      // from the client.
+      allow update: if isActive()
+        && uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny([
+               'role', 'status', 'reliabilityScore', 'gamesPlayed',
+               'noShows', 'fcmTokens', 'moderationReason', 'moderatedAt',
+               'moderatedBy'
+             ]) == false;
+
+      allow delete: if false;
+    }
+
+    // ----- venues + slots -------------------------------------------------
+    match /venues/{venueId} {
+      allow read: if true;
+      allow create: if isOwnerRole()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == 'active'
+        && request.resource.data.pricePerHour is int
+        && request.resource.data.pricePerHour >= 1000
+        && request.resource.data.pricePerHour <= 1000000
+        && request.resource.data.sport in ['football', 'basketball']
+        && request.resource.data.sector in
+             ['Remera', 'Nyarutarama', 'Kicukiro', 'Kimihurura', 'Nyamirambo']
+        && request.resource.data.rating == 0
+        && request.resource.data.ratingCount == 0
+        && request.resource.data.amenities.size() <= 20
+        && request.resource.data.photos.size() <= 10;
+
+      allow update: if isAdmin()
+        || (isActive()
+            && resource.data.ownerId == request.auth.uid
+            && request.resource.data.ownerId == resource.data.ownerId
+            // Ratings are server-aggregated only.
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny(['rating', 'ratingCount']) == false);
+
+      allow delete: if isAdmin()
+        || (isActive() && resource.data.ownerId == request.auth.uid);
+
+      match /slots/{slotId} {
+        allow read: if true;
+        allow write: if false; // createBooking / cancelBooking / setSlotBlocked only
+      }
+    }
+
+    // ----- bookings -------------------------------------------------------
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn()
+        && (resource.data.userId == request.auth.uid
+            || isAdmin()
+            || isVenueOwner(resource.data.venueId));
+      allow write: if false; // Cloud Functions only
+    }
+
+    // ----- games / rosters ------------------------------------------------
+    match /games/{gameId} {
+      allow read: if true;
+      allow write: if false;
+
+      match /players/{uid} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+
+    // ----- payments -------------------------------------------------------
+    match /payments/{paymentId} {
+      allow read: if isSignedIn()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if false; // initiatePayment / webhook only
+    }
+
+    // ----- reviews --------------------------------------------------------
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isActive()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 5
+        && request.resource.data.text is string
+        && request.resource.data.text.size() >= 3
+        && request.resource.data.text.size() <= 1000
+        // Trust flag is owned by the onReviewCreated trigger.
+        && request.resource.data.verified == false
+        && request.resource.data.userName
+             == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.name
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // ----- results --------------------------------------------------------
+    match /results/{gameId} {
+      allow read: if true;
+      allow write: if false; // postResult only
+    }
+
+    // ----- notifications --------------------------------------------------
+    match /notifications/{id} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // The recipient may only flip `read`; content is server-authored.
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['read']);
+      allow create, delete: if false;
+    }
+
+    // ----- reports / moderation ------------------------------------------
+    match /reports/{id} {
+      allow read: if isAdmin();
+      allow create: if isActive()
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.status == 'open'
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() <= 1000;
+      allow update, delete: if false; // resolveReport only
+    }
+
+    // Internal infrastructure (booking counters, reminder markers) is never
+    // client-readable or writable.
+    match /counters/{id} { allow read, write: if false; }
+    match /reminders/{id} { allow read, write: if false; }
+
+    // Deny everything not explicitly matched above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

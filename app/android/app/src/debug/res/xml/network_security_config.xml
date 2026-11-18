@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only. The Firebase Emulator Suite serves Auth/Functions/Storage
+  over plain HTTP, which Android blocks by default (targetSdk >= 28). This
+  config re-enables cleartext for local development; release builds keep the
+  secure default because this file lives under src/debug.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

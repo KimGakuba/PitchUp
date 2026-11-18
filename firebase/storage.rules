@@ -1,0 +1,38 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.get('role', 'player') == 'admin';
+    }
+
+    function isVenueOwner(venueId) {
+      return isSignedIn()
+        && firestore.get(
+             /databases/(default)/documents/venues/$(venueId)
+           ).data.ownerId == request.auth.uid;
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // Venue photos are public to read and only writable by the venue owner
+    // (or an admin), with size/type limits enforced at the storage layer.
+    match /venues/{venueId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if (isVenueOwner(venueId) || isAdmin())
+        && isImage()
+        && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

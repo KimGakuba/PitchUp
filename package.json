@@ -1,0 +1,22 @@
+{
+  "name": "pitchup",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "functions",
+    "scripts"
+  ],
+  "scripts": {
+    "app:run": "cd app && flutter run",
+    "app:analyze": "cd app && flutter analyze",
+    "app:test": "cd app && flutter test",
+    "emulators": "firebase emulators:start --project demo-pitchup --config firebase/firebase.json",
+    "emulators:export": "firebase emulators:export firebase/emulator-data --project demo-pitchup --config firebase/firebase.json",
+    "emulators:import": "firebase emulators:start --project demo-pitchup --config firebase/firebase.json --import=firebase/emulator-data --export-on-exit=firebase/emulator-data",
+    "seed": "npm run seed -w scripts",
+    "functions:build": "npm run build -w functions"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.29.1"
+  }
+}
